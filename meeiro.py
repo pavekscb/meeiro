@@ -9,7 +9,7 @@ import os
 from urllib.parse import quote 
 
 # --- КОНСТАНТЫ ПРИЛОЖЕНИЯ И ВЕРСИИ ---
-CURRENT_VERSION = "1.0.0" # !!! Текущая версия программы (будет обновляться с каждым релизом)
+CURRENT_VERSION = "1.0.2" # !!! Текущая версия программы (будет обновляться с каждым релизом)
 URL_GITHUB_API = "https://api.github.com/repos/pavekscb/meeiro/releases/latest" 
 
 # --- Файл и Константы для адреса кошелька ---
@@ -23,8 +23,9 @@ ACC_PRECISION = 100000000000 # 10^11
 UPDATE_INTERVAL_SECONDS = 60 
 
 MEE_COIN_T0_T1 = "0xe9c192ff55cffab3963c695cff6dbf9dad6aff2bb5ac19a6415cad26a81860d9::mee_coin::MeeCoin"
+APT_COIN_TYPE = "0x1::aptos_coin::AptosCoin" # Из файла 1.py
 
-APTOS_LEDGER_URL = "https://fullnode.mainnet.aptoslabs.com/v1"
+APT_LEDGER_URL = "https://fullnode.mainnet.aptoslabs.com/v1"
 HARVEST_BASE_URL = "https://explorer.aptoslabs.com/account/0x514cfb77665f99a2e4c65a5614039c66d13e00e98daf4c86305651d29fd953e5/modules/run/Staking/harvest?network=mainnet"
 ADD_MEE_URL = "https://explorer.aptoslabs.com/account/0x514cfb77665f99a2e4c65a5614039c66d13e00e98daf4c86305651d29fd953e5/modules/run/Staking/stake?network=mainnet"
 UNSTAKE_BASE_URL = "https://explorer.aptoslabs.com/account/0x514cfb77665f99a2e4c65a5614039c66d13e00e98daf4c86305651d29fd953e5/modules/run/Staking/unstake?network=mainnet"
@@ -34,7 +35,8 @@ URL_SOURCE = "https://github.com/pavekscb/meeiro"
 URL_SITE = "https://meeiro.xyz/staking"
 URL_GRAPH = "https://dexscreener.com/aptos/pcs-167"
 URL_SWAP = "https://aptos.pancakeswap.finance/swap?outputCurrency=0x1%3A%3Aaptos_coin%3A%3AAptosCoin&inputCurrency=" + quote(MEE_COIN_T0_T1)
-URL_SWAP_EARNIUM = "https://app.earnium.io/swap?from=" + quote(MEE_COIN_T0_T1) + "&to=0x1%3A%3Aaptos_coin%3A%3AAptosCoin"
+URL_SWAP_EARNIUM = "https://app.panora.exchange/swap/aptos?pair=MEE-APT"
+# URL_SWAP_EARNIUM = "https://app.earnium.io/swap?from=" + quote(MEE_COIN_T0_T1) + "&to=0x1%3A%3Aaptos_coin%3A%3AAptosCoin"
 URL_SUPPORT = "https://t.me/cripto_karta"
 
 class UpdateChecker:
@@ -81,11 +83,11 @@ class MeeiroApp(tk.Frame):
     def __init__(self, master=None):
         super().__init__(master)
         self.master = master
-        self.master.title(f"МОНИТОР СТЕЙКИНГА $MEE (APTOS) - v{CURRENT_VERSION}")
+        self.master.title(f"МАЙНИНГ МОНЕТЫ $MEE (APTOS) - v{CURRENT_VERSION}")
         
         # --- ЛОГИКА ЦЕНТРИРОВАНИЯ ОКНА ---
         window_width = 420
-        window_height = 650
+        window_height = 700 # Немного увеличил высоту для новых данных
         
         # Получаем размеры экрана
         screen_width = self.master.winfo_screenwidth()
@@ -127,7 +129,7 @@ class MeeiroApp(tk.Frame):
         main_frame.pack(fill="both", expand=True)
 
         # Заголовок
-        title_header = tk.Label(main_frame, text="МОНИТОР СТЕЙКИНГА $MEE (APTOS)", 
+        title_header = tk.Label(main_frame, text="МАЙНИНГ МОНЕТЫ $MEE (APTOS)", 
                                 fg="#1E90FF", font=("Arial", 16, "bold"), 
                                 pady=5, borderwidth=0, relief="flat")
         title_header.pack(fill="x", pady=(0, 15))
@@ -142,12 +144,18 @@ class MeeiroApp(tk.Frame):
         
         self._update_wallet_label_text() 
         
+        # --- ВСТАВКА КОДА ИЗ 1.py (Виджет балансов) ---
+        self.on_chain_balances_label = tk.Label(wallet_frame, text="Загрузка балансов...", 
+                                               font=("Arial", 9), bg="#f0f0f0", fg="#555", justify=tk.LEFT, anchor="w")
+        self.on_chain_balances_label.pack(fill="x", pady=(0, 5))
+        # ----------------------------------------------
+
         edit_btn = tk.Button(wallet_frame, text="Сменить кошелек", command=self._open_custom_edit_wallet_dialog, bg="#ffffff")
         edit_btn.pack(fill="x")
 
         # --- Секция Баланс ---
         balance_frame = self._create_section(main_frame, bg="#e6f7ff", border=1, relief="solid", bd_color="#8ac0e6")
-        tk.Label(balance_frame, text="Баланс $MEE:", font=("Arial", 10, "bold"), bg="#e6f7ff", anchor="w").pack(fill="x")
+        tk.Label(balance_frame, text="Баланс стейкинга $MEE:", font=("Arial", 10, "bold"), bg="#e6f7ff", anchor="w").pack(fill="x")
         self.mee_balance_value_label = tk.Label(balance_frame, text="0,00000000 $MEE", font=("Arial", 12), bg="#e6f7ff", anchor="w")
         self.mee_balance_value_label.pack(side="left", fill="x", expand=True)
         tk.Button(balance_frame, text="Добавить $MEE", command=lambda: self._show_modal_and_open_url("Stake", ADD_MEE_URL), 
@@ -239,17 +247,41 @@ class MeeiroApp(tk.Frame):
     # === 1. Функции API и расчетов (Core Logic) ===
     # =======================================================
     
+    # --- ВСТАВКА ФУНКЦИЙ ИЗ 1.py ---
+    def _get_raw_balance(self, coin_type):
+        """Возвращает баланс в минимальных единицах (аналог из 1.py)"""
+        try:
+            url = f"{APT_LEDGER_URL}/accounts/{self.current_wallet_address}/balance/{coin_type}"
+            headers = {"Accept": "application/json, application/x-bcs"}
+            r = requests.get(url, headers=headers, timeout=5)
+            r.raise_for_status()
+            return int(r.text)
+        except:
+            return 0
+
+    def _get_coin_decimals(self, coin_type):
+        """Получает decimals из CoinInfo (аналог из 1.py)"""
+        try:
+            module_address = coin_type.split("::")[0]
+            url = f"{APT_LEDGER_URL}/accounts/{module_address}/resource/0x1::coin::CoinInfo<{coin_type}>"
+            r = requests.get(url, timeout=5)
+            r.raise_for_status()
+            return int(r.json()["data"]["decimals"])
+        except:
+            return 8 # Default
+    # -------------------------------
+
     def _generate_api_urls(self, account_address):
         """Генерирует URL для запросов API."""
         if len(account_address) != 66 or not account_address.startswith("0x"):
             return None
         
         STAKE_RESOURCE_TYPE = f"0x514cfb77665f99a2e4c65a5614039c66d13e00e98daf4c86305651d29fd953e5::Staking::StakeInfo<{MEE_COIN_T0_T1},{MEE_COIN_T0_T1}>"
-        STAKE_API_URL = f"{APTOS_LEDGER_URL}/accounts/{account_address}/resource/{quote(STAKE_RESOURCE_TYPE)}"
+        STAKE_API_URL = f"{APT_LEDGER_URL}/accounts/{account_address}/resource/{quote(STAKE_RESOURCE_TYPE)}"
 
         POOL_ADDRESS = "0x482b8d35e320cca4f2d49745a1f702d052aa0366ac88e375c739dc479e81bc98"
         POOL_RESOURCE_TYPE = f"0x514cfb77665f99a2e4c65a5614039c66d13e00e98daf4c86305651d29fd953e5::Staking::PoolInfo<{MEE_COIN_T0_T1},{MEE_COIN_T0_T1}>"
-        POOL_API_URL = f"{APTOS_LEDGER_URL}/accounts/{POOL_ADDRESS}/resource/{quote(POOL_RESOURCE_TYPE)}"
+        POOL_API_URL = f"{APT_LEDGER_URL}/accounts/{POOL_ADDRESS}/resource/{quote(POOL_RESOURCE_TYPE)}"
 
         return {"stakeUrl": STAKE_API_URL, "poolUrl": POOL_API_URL}
 
@@ -270,7 +302,7 @@ class MeeiroApp(tk.Frame):
     def _fetch_ledger_timestamp(self):
         """Получает текущую временную метку из Ledger."""
         try:
-            response = requests.get(APTOS_LEDGER_URL, timeout=5)
+            response = requests.get(APT_LEDGER_URL, timeout=5)
             response.raise_for_status()
             data = response.json()
             return int(data["ledger_timestamp"]) // 1000000
@@ -569,6 +601,13 @@ class MeeiroApp(tk.Frame):
         mee_total_reward_float = results.get("meeTotalRewardFloat")
         mee_rate = results.get("meeRate")
         
+        # --- ОБНОВЛЕНИЕ БАЛАНСОВ APT И MEE ИЗ 1.py ---
+        apt_on_chain = results.get("apt_on_chain", 0)
+        mee_on_chain = results.get("mee_on_chain", 0)
+        balances_text = f"Баланс кошелька: {apt_on_chain:.4f} APT | {mee_on_chain:.6f} MEE"
+        self.on_chain_balances_label.config(text=balances_text)
+        # ---------------------------------------------
+
         self._update_wallet_label_text()
         
         if mee_balance is None or mee_total_reward_float is None:
@@ -605,8 +644,21 @@ class MeeiroApp(tk.Frame):
     def _fetch_and_calculate_rewards(self):
         """Основная функция для запроса данных (выполняется в потоке)."""
         urls = self._generate_api_urls(self.current_wallet_address)
+        
+        # --- ЛОГИКА ИЗ 1.py ---
+        try:
+            apt_raw = self._get_raw_balance(APT_COIN_TYPE)
+            apt_val = apt_raw / 1e8
+            
+            mee_dec = self._get_coin_decimals(MEE_COIN_T0_T1)
+            mee_raw = self._get_raw_balance(MEE_COIN_T0_T1)
+            mee_val = mee_raw / (10 ** mee_dec)
+        except:
+            apt_val, mee_val = 0, 0
+        # ----------------------
+
         if not urls: 
-            return {"meeBalance": None, "meeTotalRewardFloat": None, "meeRate": 0.0}
+            return {"meeBalance": None, "meeTotalRewardFloat": None, "meeRate": 0.0, "apt_on_chain": apt_val, "mee_on_chain": mee_val}
         
         current_time = self._fetch_ledger_timestamp()
         
@@ -614,7 +666,7 @@ class MeeiroApp(tk.Frame):
         mee_pool_data = self._fetch_data(urls["poolUrl"])
 
         if not mee_stake_data or not mee_pool_data or current_time is None:
-            return {"meeBalance": None, "meeTotalRewardFloat": None, "meeRate": 0.0}
+            return {"meeBalance": None, "meeTotalRewardFloat": None, "meeRate": 0.0, "apt_on_chain": apt_val, "mee_on_chain": mee_val}
 
         stake_balance, total_reward_float = self._calculate_stake_reward(
             mee_stake_data, mee_pool_data, current_time
@@ -625,7 +677,9 @@ class MeeiroApp(tk.Frame):
         return {
             "meeBalance": stake_balance, 
             "meeTotalRewardFloat": total_reward_float, 
-            "meeRate": mee_rate
+            "meeRate": mee_rate,
+            "apt_on_chain": apt_val,
+            "mee_on_chain": mee_val
         }
 
     def run_update_in_thread(self):
@@ -757,7 +811,7 @@ class MeeiroApp(tk.Frame):
             },
             "Unstake": {
                 "title": "⚠️ Готовы забрать $MEE из стейкинга?",
-                "text": "1. Контракт скопирован! Подключите кошелек.\n2. Вставьте контракт $MEE в поля T0 и T1.\n3. В поле \"arg0: u64\" введите сумму $MEE, которую хотите забрать (с +6 нулями).\n4. В поле \"arg1: u8\" введите тип вывода: 0 (Обычный) или 1 (Мгновенный, комиссия 15%).\n5. Нажмите RUN и подпишите транзакцию."
+                "text": "1. Контракт скопирован! Подключите кошелек.\n2. Вставьте контракт $MEE в поля T0 и T1.\n3. В поле \"arg0: u64\" введите сумму $MEE, которую хотите забрать (с +6 нулями).\n4. В поле \"arg1: u8\" введите тип вывода: 0: Обычный Unstake (15 дней разблокировки, затем `withdraw`). или 1: Мгновенный Unstake (комиссия 15%).\n5. Нажмите RUN и подпишите транзакцию."
             }
         }
         
